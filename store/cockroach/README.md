@@ -1,4 +1,4 @@
-This is an implementation of cockroach storage engine support.
+This is an implementation of cockroach storage engine support.(Package dependency is not considered currently.)
 
 #### run tidb with cockroach
 
