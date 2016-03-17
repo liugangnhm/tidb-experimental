@@ -9,7 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cockroachdb/cockroach/base"
 	cockroach "github.com/cockroachdb/cockroach/client"
+	"github.com/cockroachdb/cockroach/rpc"
+	"github.com/cockroachdb/cockroach/security"
 	"github.com/cockroachdb/cockroach/util/stop"
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
@@ -56,14 +59,15 @@ type cockroachClient struct {
 }
 
 type cockroachStore struct {
-	mu     sync.Mutex
-	uuid   string
-	sender string
-	user   string
-	host   string
-	port   int
-	params string
-	conns  []cockroachClient
+	mu    sync.Mutex
+	uuid  string
+	user  string
+	host  string
+	port  int
+	ca    string
+	cert  string
+	key   string
+	conns []cockroachClient
 }
 
 func (s *cockroachStore) getCockroachClient() cockroachClient {
@@ -122,12 +126,13 @@ func (d Driver) Open(path string) (kv.Storage, error) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 
-	sender, user, host, port, params, err := parsePath(path)
+	user, host, port, ca, cert, key, err := parsePath(path)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 
-	uuid := fmt.Sprintf("cockroachdb-%v-%v-%v-%v", sender, user, host, port)
+	//TODO: really needed?
+	uuid := fmt.Sprintf("cockroachdb-%v-%v-%v", user, host, port)
 	if store, ok := mc.cache[uuid]; ok {
 		if host != store.host && port != store.port {
 			err = errors.Errorf("cockroachdb: store(%s) is opened with a different host:port, old: %v:%v, new: %v:%v",
@@ -137,12 +142,7 @@ func (d Driver) Open(path string) (kv.Storage, error) {
 		return store, nil
 	}
 
-	var addr string
-	if params == "" {
-		addr = fmt.Sprintf("%s://%s@%s:%d", sender, user, host, port)
-	} else {
-		addr = fmt.Sprintf("%s://%s@%s:%d?%s", sender, user, host, port, params)
-	}
+	addr := fmt.Sprintf("%s:%d", host, port)
 	log.Debugf("Open cockroach cluster with addr %s", addr)
 
 	// create buffered CockroachDB connections, cockroach.DB is goroutine-safe, so
@@ -150,8 +150,7 @@ func (d Driver) Open(path string) (kv.Storage, error) {
 	conns := make([]cockroachClient, 0, cockroachConnPollSize)
 	for i := 0; i < cockroachConnPollSize; i++ {
 		var c cockroachClient
-		c.stopper = stop.NewStopper()
-		c.db, err = cockroach.Open(c.stopper, addr)
+		c.db, c.stopper, err = makeDBClient(user, ca, cert, key, addr)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
@@ -159,22 +158,25 @@ func (d Driver) Open(path string) (kv.Storage, error) {
 	}
 
 	s := &cockroachStore{
-		uuid:   uuid,
-		sender: sender,
-		user:   user,
-		host:   host,
-		port:   port,
-		params: params,
-		conns:  conns,
+		uuid:  uuid,
+		user:  user,
+		host:  host,
+		port:  port,
+		ca:    ca,
+		cert:  cert,
+		key:   key,
+		conns: conns,
 	}
 	mc.cache[uuid] = s
 	return s, nil
 }
 
-func parsePath(path string) (sender, user, host string, port int, params string, err error) {
+func parsePath(path string) (user, host string, port int,
+	ca, cert, key string, err error) {
 	u, err := url.Parse(path)
 	if err != nil {
-		return "", "", "", 0, "", errors.Trace(err)
+		err = errors.Trace(err)
+		return
 	}
 
 	if strings.ToLower(u.Scheme) != CockroachScheme {
@@ -183,9 +185,8 @@ func parsePath(path string) (sender, user, host string, port int, params string,
 		return
 	}
 	log.Debugf("[kv] url:%#v", u)
-	sender = "rpcs"
 	if u.User == nil {
-		user = "node"
+		user = security.NodeUser
 	} else {
 		user = u.User.Username()
 	}
@@ -202,7 +203,28 @@ func parsePath(path string) (sender, user, host string, port int, params string,
 		return
 	}
 	host = hostStrs[0]
-	params = u.RawQuery
-	err = nil
+
+	// cert
+	ca = u.Query().Get("ca")
+	cert = u.Query().Get("cert")
+	key = u.Query().Get("key")
+
+	log.Debugf("ca:%s cert:%s key:%s", ca, cert, key)
 	return
+}
+
+func makeDBClient(user, ca, cert, key, addr string) (*cockroach.DB, *stop.Stopper, error) {
+	stopper := stop.NewStopper()
+	context := &base.Context{
+		User:       user,
+		SSLCA:      ca,
+		SSLCert:    cert,
+		SSLCertKey: key,
+	}
+	sender, err := cockroach.NewSender(rpc.NewContext(context, nil, stopper), addr)
+	if err != nil {
+		stopper.Stop()
+		return nil, nil, fmt.Errorf("failed to initialize KV client: %s", err)
+	}
+	return cockroach.NewDB(sender), stopper, nil
 }

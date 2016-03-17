@@ -7,8 +7,14 @@ This is an implementation of cockroach storage engine support.(Package dependenc
 * run tidb_server
 
 ```shell
-tidb_server -store="cockroach" -path="127.0.0.1:26257?certs=./certs"
+tidb_server -store="cockroach" -path="node@127.0.0.1:26257?ca=ca.crt;cert=node.crt;key=node.key"
 ```
+
+* ca: Path to the CA certificate.
+* cert: Path to the client or server certificate.
+* key: Path to the key protecting
+
+See [cockroach](https://github.com/cockroachdb/cockroach#running-a-multi-node-cluster) for more details.
 
 ** Note: ** 
 

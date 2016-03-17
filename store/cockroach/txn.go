@@ -21,6 +21,7 @@ type cockroachTxn struct {
 	startts  roachpb.Timestamp // start timestamp
 	committs roachpb.Timestamp // commit timestam
 	valid    bool
+	dirty    bool
 }
 
 func newCockroachTxn(t *cockroach.Txn) *cockroachTxn {
@@ -44,6 +45,7 @@ func (txn *cockroachTxn) Get(k kv.Key) ([]byte, error) {
 
 func (txn *cockroachTxn) Set(k kv.Key, v []byte) error {
 	log.Debugf("[kv] set %q txn:%d", k, txn.startts)
+	txn.dirty = true
 	return txn.us.Set(k, v)
 }
 
@@ -63,6 +65,7 @@ func (txn *cockroachTxn) Seek(k kv.Key) (kv.Iterator, error) {
 
 func (txn *cockroachTxn) Delete(k kv.Key) error {
 	log.Debugf("[kv] delete %q txn:%d", k, txn.startts)
+	txn.dirty = true
 	return txn.us.Delete(k)
 }
 
@@ -72,6 +75,10 @@ func (txn *cockroachTxn) SetOption(opt kv.Option, val interface{}) {
 
 func (txn *cockroachTxn) DelOption(opt kv.Option) {
 	txn.us.DelOption(opt)
+}
+
+func (txn *cockroachTxn) IsReadOnly() bool {
+	return !txn.dirty
 }
 
 func (txn *cockroachTxn) doCommit() error {

@@ -1,0 +1,3 @@
+tidb-server/tidb-server
+tidb_server
+store/cockroach/test_certs/*
